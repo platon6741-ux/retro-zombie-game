@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zombie Siege</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --panel: #111827;
+        --panel-2: #1f2937;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #ef4444;
+        --accent-2: #22c55e;
+        --gold: #fbbf24;
+        --shadow: rgba(0, 0, 0, 0.45);
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: radial-gradient(circle at top, #1f2937 0%, var(--bg) 35%, #090d14 100%);
+        color: var(--text);
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        overflow: hidden;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      #gameCanvas {
+        width: min(92vw, 1000px);
+        height: min(82vh, 680px);
+        border-radius: 18px;
+        border: 3px solid rgba(255,255,255,0.12);
+        background: linear-gradient(#111827, #0b1220);
+        box-shadow: 0 25px 80px var(--shadow);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="gameCanvas" width="1000" height="640"></canvas>
+
+    <script>
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+
+      const WORLD_WIDTH = canvas.width;
+      const WORLD_HEIGHT = canvas.height;
+
+      const keys = {};
+      const bullets = [];
+      const zombies = [];
+      const particles = [];
+
+      let level = 1;
+      let score = 0;
+      let kills = 0;
+      let highScore = Number(localStorage.getItem('zombieHighScore') || 0);
+      let gameOver = false;
+      let lastTime = 0;
+      let spawnTimer = 0;
+      let zombieSpawnInterval = 1.5;
+      let levelUpFlash = 0;
+
+      const player = {
+        x: WORLD_WIDTH / 2,
+        y: WORLD_HEIGHT / 2,
+        radius: 18,
+        speed: 250,
+        health: 100,
+        maxHealth: 100,
+        fireCooldown: 0,
+        weaponLevel: 1,
+        facingX: 1,
+        facingY: 0,
+        invulnerable: 0
+      };
+
+      function randRange(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function rectContains(px, py, rx, ry, rw, rh) {
+        return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+      }
+
+      function resetPlayer() {
+        player.x = WORLD_WIDTH / 2;
+        player.y = WORLD_HEIGHT / 2;
+        player.health = player.maxHealth;
+        player.fireCooldown = 0;
+      }
+
+      function createZombie() {
+        const side = Math.floor(Math.random() * 4);
+        let x = 0;
+        let y = 0;
+
+        if (side === 0) {
+          x = randRange(-50, WORLD_WIDTH + 50);
+          y = -40;
+        } else if (side === 1) {
+          x = WORLD_WIDTH + 40;
+          y = randRange(-50, WORLD_HEIGHT + 50);
+        } else if (side === 2) {
+          x = randRange(-50, WORLD_WIDTH + 50);
+          y = WORLD_HEIGHT + 40;
+        } else {
+          x = -40;
+          y = randRange(-50, WORLD_HEIGHT + 50);
+        }
+
+        const speed = 40 + level * 12 + Math.random() * 18;
+        const hp = 1 + Math.floor(level / 3);
+
+        zombies.push({
+          x,
+          y,
+          radius: 14 + Math.random() * 6,
+          speed,
+          hp,
+          maxHp: hp,
+          damageFlash: 0
+        });
+      }
+
+      function spawnWave() {
+        const count = 3 + level;
+        for (let i = 0; i < count; i++) {
+          createZombie();
+        }
+      }
+
+      function shootBullet() {
+        if (player.fireCooldown > 0 || gameOver) return;
+
+        const speed = 520;
+        const spread = player.weaponLevel >= 3 ? 0.23 : 0.12;
+        const bulletCount = player.weaponLevel >= 2 ? 2 : 1;
+
+        for (let i = 0; i < bulletCount; i++) {
+          const angle = Math.atan2(player.facingY, player.facingX) + (i === 0 ? -spread : spread);
+          bullets.push({
+            x: player.x + Math.cos(angle) * 22,
+            y: player.y + Math.sin(angle) * 22,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            radius: 5,
+            damage: 1 + Math.floor(player.weaponLevel / 2)
+          });
+        }
+
+        player.fireCooldown = 0.22;
+      }
+
+      function addParticles(x, y, color, count = 10) {
+        for (let i = 0; i < count; i++) {
+          particles.push({
+            x,
+            y,
+            vx: randRange(-120, 120),
+            vy: randRange(-120, 120),
+            life: randRange(0.3, 0.9),
+            color,
+            radius: randRange(2, 5)
+          });
+        }
+      }
+
+      function updateParticles(dt) {
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.life -= dt;
+          if (p.life <= 0) particles.splice(i, 1);
+        }
+      }
+
+      function damagePlayer(amount) {
+        if (player.invulnerable > 0 || gameOver) return;
+        player.health -= amount;
+        player.invulnerable = 0.7;
+        addParticles(player.x, player.y, '#f87171', 12);
+
+        if (player.health <= 0) {
+          player.health = 0;
+          gameOver = true;
+          highScore = Math.max(highScore, score);
+          localStorage.setItem('zombieHighScore', String(highScore));
+        }
+      }
+
+      function nextLevel() {
+        level += 1;
+        levelUpFlash = 1;
+        score += 50;
+        zombieSpawnInterval = Math.max(0.45, 1.5 - level * 0.06);
+        spawnWave();
+        if (level % 3 === 0) {
+          player.weaponLevel = Math.min(player.weaponLevel + 1, 5);
+          player.maxHealth = Math.min(player.maxHealth + 10, 150);
+          player.health = player.maxHealth;
+        }
+      }
+
+      function updateBullets(dt) {
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          const bullet = bullets[i];
+          bullet.x += bullet.vx * dt;
+          bullet.y += bullet.vy * dt;
+
+          if (bullet.x < -20 || bullet.x > WORLD_WIDTH + 20 || bullet.y < -20 || bullet.y > WORLD_HEIGHT + 20) {
+            bullets.splice(i, 1);
+            continue;
+          }
+
+          for (let j = zombies.length - 1; j >= 0; j--) {
+            const zombie = zombies[j];
+            const dx = bullet.x - zombie.x;
+            const dy = bullet.y - zombie.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist < bullet.radius + zombie.radius) {
+              zombie.hp -= bullet.damage;
+              zombie.damageFlash = 0.15;
+              bullets.splice(i, 1);
+              addParticles(bullet.x, bullet.y, '#fbbf24', 6);
+
+              if (zombie.hp <= 0) {
+                zombies.splice(j, 1);
+                score += 10;
+                kills += 1;
+                addParticles(zombie.x, zombie.y, '#34d399', 14);
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      function updateZombies(dt) {
+        for (let i = zombies.length - 1; i >= 0; i--) {
+          const zombie = zombies[i];
+          const dx = player.x - zombie.x;
+          const dy = player.y - zombie.y;
+          const dist = Math.hypot(dx, dy) || 1;
+
+          zombie.x += (dx / dist) * zombie.speed * dt;
+          zombie.y += (dy / dist) * zombie.speed * dt;
+
+          if (dist < zombie.radius + player.radius + 2) {
+            damagePlayer(8 + Math.floor(level / 2));
+          }
+
+          zombie.damageFlash = Math.max(0, zombie.damageFlash - dt);
+        }
+      }
+
+      function updatePlayer(dt) {
+        const moveX = (keys['ArrowRight'] || keys['d'] ? 1 : 0) - (keys['ArrowLeft'] || keys['a'] ? 1 : 0);
+        const moveY = (keys['ArrowDown'] || keys['s'] ? 1 : 0) - (keys['ArrowUp'] || keys['w'] ? 1 : 0);
+
+        const mag = Math.hypot(moveX, moveY) || 1;
+        player.x += (moveX / mag) * player.speed * dt;
+        player.y += (moveY / mag) * player.speed * dt;
+
+        player.x = clamp(player.x, 20, WORLD_WIDTH - 20);
+        player.y = clamp(player.y, 20, WORLD_HEIGHT - 20);
+
+        const mouseX = (mouse.x ?? player.x);
+        const mouseY = (mouse.y ?? player.y);
+        const mDx = mouseX - player.x;
+        const mDy = mouseY - player.y;
+        const mDist = Math.hypot(mDx, mDy) || 1;
+        player.facingX = mDx / mDist;
+        player.facingY = mDy / mDist;
+
+        player.fireCooldown = Math.max(0, player.fireCooldown - dt);
+        player.invulnerable = Math.max(0, player.invulnerable - dt);
+      }
+
+      function checkLevelProgress() {
+        if (kills >= level * 12 && !gameOver) {
+          nextLevel();
+          kills = 0;
+        }
+      }
+
+      function drawBackground() {
+        ctx.fillStyle = '#0b1020';
+        ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+        for (let x = 0; x < WORLD_WIDTH; x += 32) {
+          for (let y = 0; y < WORLD_HEIGHT; y += 32) {
+            ctx.fillStyle = (x + y) % 64 === 0 ? '#111827' : '#0d1726';
+            ctx.fillRect(x, y, 32, 32);
+          }
+        }
+      }
+
+      function drawPlayer() {
+        // shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(player.x, player.y + 18, 16, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.save();
+        ctx.translate(player.x, player.y);
+
+        const dir = Math.atan2(player.facingY, player.facingX);
+        ctx.rotate(dir);
+
+        ctx.fillStyle = '#60a5fa';
+        ctx.fillRect(-10, -10, 20, 20);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(8, -4, 12, 8);
+
+        ctx.restore();
+
+        // health bar
+        const barW = 80;
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(player.x - barW / 2, player.y - 30, barW, 8);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(player.x - barW / 2, player.y - 30, (player.health / player.maxHealth) * barW, 8);
+      }
+
+      function drawZombie(zombie) {
+        ctx.save();
+        ctx.translate(zombie.x, zombie.y);
+
+        ctx.fillStyle = zombie.damageFlash > 0 ? '#fca5a5' : '#4ade80';
+        ctx.beginPath();
+        ctx.arc(0, 0, zombie.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#111827';
+        ctx.fillRect(-zombie.radius, -zombie.radius - 12, zombie.radius * 2, 5);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(-zombie.radius, -zombie.radius - 12, (zombie.hp / zombie.maxHp) * zombie.radius * 2, 5);
+
+        ctx.restore();
+      }
+
+      function drawBullets() {
+        for (const bullet of bullets) {
+          ctx.fillStyle = '#fbbf24';
+          ctx.beginPath();
+          ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawParticles() {
+        for (const p of particles) {
+          ctx.fillStyle = p.color;
+          ctx.globalAlpha = Math.max(0, p.life);
+          ctx.fillRect(p.x, p.y, p.radius, p.radius);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function drawHud() {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+        ctx.fillRect(14, 12, 220, 120);
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.strokeRect(14, 12, 220, 120);
+
+        ctx.fillStyle = '#e5e7eb';
+        ctx.font = 'bold 24px Segoe UI';
+        ctx.fillText('Zombie Siege', 28, 40);
+
+        ctx.font = '18px Segoe UI';
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillText(`Level: ${level}`, 28, 68);
+        ctx.fillText(`Score: ${score}`, 28, 94);
+        ctx.fillText(`Health: ${player.health}`, 28, 120);
+
+        if (gameOver) {
+          ctx.fillStyle = 'rgba(2, 6, 23, 0.72)';
+          ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 52px Segoe UI';
+          ctx.fillText('YOU DIED', WORLD_WIDTH / 2 - 140, WORLD_HEIGHT / 2 - 10);
+          ctx.font = '24px Segoe UI';
+          ctx.fillText(`Final Score: ${score}`, WORLD_WIDTH / 2 - 100, WORLD_HEIGHT / 2 + 32);
+          ctx.fillText('Press R to restart', WORLD_WIDTH / 2 - 128, WORLD_HEIGHT / 2 + 72);
+        }
+
+        if (levelUpFlash > 0) {
+          ctx.fillStyle = `rgba(34, 197, 94, ${levelUpFlash * 0.4})`;
+          ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+          levelUpFlash = Math.max(0, levelUpFlash - 0.02);
+        }
+      }
+
+      const mouse = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+
+      window.addEventListener('keydown', (event) => {
+        keys[event.key] = true;
+        if (event.key === ' ') {
+          shootBullet();
+        }
+        if (event.key.toLowerCase() === 'r' && gameOver) {
+          restartGame();
+        }
+      });
+
+      window.addEventListener('keyup', (event) => {
+        keys[event.key] = false;
+      });
+
+      canvas.addEventListener('mousemove', (event) => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * WORLD_WIDTH;
+        mouse.y = ((event.clientY - rect.top) / rect.height) * WORLD_HEIGHT;
+      });
+
+      canvas.addEventListener('mousedown', () => {
+        if (!gameOver) shootBullet();
+      });
+
+      function restartGame() {
+        bullets.length = 0;
+        zombies.length = 0;
+        particles.length = 0;
+        score = 0;
+        kills = 0;
+        level = 1;
+        zombieSpawnInterval = 1.5;
+        gameOver = false;
+        resetPlayer();
+        spawnWave();
+      }
+
+      function update(dt) {
+        if (gameOver) return;
+
+        player.fireCooldown = Math.max(0, player.fireCooldown - dt);
+        updatePlayer(dt);
+        updateBullets(dt);
+        updateZombies(dt);
+        updateParticles(dt);
+
+        spawnTimer += dt;
+        if (spawnTimer >= zombieSpawnInterval) {
+          spawnTimer = 0;
+          createZombie();
+        }
+
+        checkLevelProgress();
+      }
+
+      function render() {
+        drawBackground();
+        drawBullets();
+        for (const zombie of zombies) drawZombie(zombie);
+        drawPlayer();
+        drawParticles();
+        drawHud();
+      }
+
+      function gameLoop(timestamp) {
+        const dt = Math.min((timestamp - lastTime) / 1000 || 0.016, 0.033);
+        lastTime = timestamp;
+        update(dt);
+        render();
+        requestAnimationFrame(gameLoop);
+      }
+
+      resetPlayer();
+      spawnWave();
+      requestAnimationFrame(gameLoop);
+    </script>
+  </body>
+</html>
